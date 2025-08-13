@@ -1,0 +1,20 @@
+{
+  "name": "obsidian-longhand",
+  "version": "0.0.1",
+  "description": "Obsidian plugin to process images in the current note with Azure OCR + OpenAI and prepend the transcription.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "esbuild src/main.ts --bundle --outfile=main.js --external:obsidian --format=cjs --target=es2020 --platform=browser --sourcemap",
+    "build": "esbuild src/main.ts --bundle --minify --outfile=main.js --external:obsidian --format=cjs --target=es2020 --platform=browser"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.17",
+    "esbuild": "^0.21.5",
+    "obsidian": "^1.5.12",
+    "typescript": "^5.4.5"
+  },
+  "dependencies": {
+    "openai": "^4.56.0",
+    "heic2any": "^0.0.3"
+  }
+}
