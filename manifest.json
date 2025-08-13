@@ -1,7 +1,7 @@
 {
   "id": "longhand-obsidian",
   "name": "Longhand",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "minAppVersion": "1.5.12",
   "description": "Process all images in the current note: Azure OCR + OpenAI vision, prepend the transcribed text to the note.",
   "author": "Meadow",
