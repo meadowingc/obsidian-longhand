@@ -10,6 +10,7 @@ export interface LonghandSettings {
   imageLimit: number; // cap per run
   showStatusBarProgress: boolean;
   showStartFinishNotices: boolean;
+  personalContext: string;
 }
 
 export const DEFAULT_SETTINGS: LonghandSettings = {
@@ -22,6 +23,7 @@ export const DEFAULT_SETTINGS: LonghandSettings = {
   imageLimit: 10,
   showStatusBarProgress: true,
   showStartFinishNotices: true,
+  personalContext: "",
 };
 
 export class LonghandSettingTab extends PluginSettingTab {
@@ -129,6 +131,26 @@ export class LonghandSettingTab extends PluginSettingTab {
           this.settings.showStartFinishNotices = v;
           await this.onSave(this.settings);
         })
+      );
+
+    new Setting(containerEl)
+      .setName("Personal context for transcription")
+      .setDesc("Optional names/terms (e.g., family, project jargon). Sent to the LLM to reduce mistakes (e.g., Roa vs Rod). Avoid sensitive info.")
+      .addTextArea((t: any) =>
+        t
+          .setPlaceholder("e.g., I have two sons, X and Y. X is older. My wife is called Z.")
+          .setValue(this.settings.personalContext)
+          .onChange(async (v: string) => {
+            const trimmed = v.trim();
+            const MAX = 2000;
+            if (trimmed.length > MAX) {
+              new Notice("Personal context limited to 2000 characters; extra was truncated.");
+              this.settings.personalContext = trimmed.slice(0, MAX);
+            } else {
+              this.settings.personalContext = trimmed;
+            }
+            await this.onSave(this.settings);
+          })
       );
 
     new Setting(containerEl)

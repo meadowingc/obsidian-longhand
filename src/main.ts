@@ -163,12 +163,16 @@ export default class LonghandPlugin extends Plugin {
       // Single OpenAI call with all images + OCR bundle
       let modelOutput = "";
       try {
-        modelOutput = await openAiTranscription(this.settings.openaiApiKey, perImageResults.map((r) => ({
-          fileName: r.fileName,
-          alt: r.ref.alt || "",
-          ocrText: r.ocrText,
-          dataUrl: r.llmDataUrl, // can be undefined for some; service will filter
-        })));
+        modelOutput = await openAiTranscription(
+          this.settings.openaiApiKey,
+          perImageResults.map((r) => ({
+            fileName: r.fileName,
+            alt: r.ref.alt || "",
+            ocrText: r.ocrText,
+            dataUrl: r.llmDataUrl, // can be undefined for some; service will filter
+          })),
+          this.settings.personalContext
+        );
       } catch (e: any) {
         console.error(e);
         progress.fail("OpenAI request failed.");

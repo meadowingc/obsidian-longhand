@@ -13,7 +13,7 @@ export interface LlmInputItem {
  * - The image contents themselves (for those where dataUrl is available)
  * Returns markdown transcription suitable for inserting into the note.
  */
-export async function openAiTranscription(apiKey: string, items: LlmInputItem[]): Promise<string> {
+export async function openAiTranscription(apiKey: string, items: LlmInputItem[], personalContext?: string): Promise<string> {
   // Only allow image types commonly supported by OpenAI vision (png, jpeg, webp, gif)
   const usable = items.filter(
     (i) => !!i.dataUrl && /^data:image\/(png|jpe?g|webp|gif);/i.test(i.dataUrl)
@@ -41,7 +41,7 @@ export async function openAiTranscription(apiKey: string, items: LlmInputItem[])
     })),
   ];
 
-  const systemPrompt = [
+  const systemParts = [
     "You are an assistant transcribing handwritten notes from images.",
     "Goals:",
     "- Produce clean, readable markdown.",
@@ -49,7 +49,15 @@ export async function openAiTranscription(apiKey: string, items: LlmInputItem[])
     "- Use the provided OCR text as primary input; consult images to correct OCR mistakes.",
     "- Keep the author's original wording and style; do not add meta commentary.",
     "- If uncertain about a word, use your best judgment from context.",
-  ].join("\n");
+  ];
+  if (personalContext && personalContext.trim()) {
+    systemParts.push(
+      "",
+      "User-provided context (use only if relevant; prefer OCR + image evidence):",
+      personalContext.trim()
+    );
+  }
+  const systemPrompt = systemParts.join("\n");
 
   const resp = await client.chat.completions.create({
     model: "gpt-4o",
