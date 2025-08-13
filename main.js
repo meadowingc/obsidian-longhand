@@ -88,4 +88,6 @@ https://help.openai.com/en/articles/5112595-best-practices-for-api-key-safety
 
 ${h.trim()}
 
+---
+
 ${c}`;await this.app.vault.modify(e,g),a.done(`Longhand: inserted transcription for ${i.length} image(s).`)}catch(c){console.error(c),a.fail("Failed to insert transcription into note.")}}finally{a.dispose()}}};

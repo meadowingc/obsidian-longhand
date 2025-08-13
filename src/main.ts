@@ -193,7 +193,7 @@ export default class LonghandPlugin extends Plugin {
         const original = await this.app.vault.read(file);
         const timestamp = new Date().toISOString().replace("T", " ").substring(0, 19);
         const heading = `## Longhand transcription (${timestamp})`;
-        const newContent = `${heading}\n\n${modelOutput.trim()}\n\n${original}`;
+        const newContent = `${heading}\n\n${modelOutput.trim()}\n\n---\n\n${original}`;
         await this.app.vault.modify(file, newContent);
         progress.done(`Longhand: inserted transcription for ${perImageResults.length} image(s).`);
       } catch (e: any) {

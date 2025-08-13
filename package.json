@@ -5,7 +5,8 @@
   "main": "main.js",
   "scripts": {
     "dev": "esbuild src/main.ts --bundle --outfile=main.js --external:obsidian --format=cjs --target=es2020 --platform=browser --sourcemap",
-    "build": "esbuild src/main.ts --bundle --minify --outfile=main.js --external:obsidian --format=cjs --target=es2020 --platform=browser"
+    "build": "esbuild src/main.ts --bundle --minify --outfile=main.js --external:obsidian --format=cjs --target=es2020 --platform=browser",
+    "release": "node scripts/release.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.17",
