@@ -6,6 +6,7 @@ import { azureOcr } from "./services/ocrService";
 import { openAiTranscription } from "./services/openaiService";
 import { ProgressService } from "./services/progress";
 import { convertHeicVaultFileToJpeg, rewriteNoteLinks } from "./services/heicReplace";
+import { wikilinkEntities } from "./services/wikilinkEntities";
 
 export default class LonghandPlugin extends Plugin {
   settings: LonghandSettings = { ...DEFAULT_SETTINGS };
@@ -25,6 +26,12 @@ export default class LonghandPlugin extends Plugin {
       name: "Process images in current note",
       callback: () => this.processImagesInCurrentNote(),
     });
+
+    this.addCommand({
+      id: "longhand-convert-heic-to-jpeg",
+      name: "Convert HEIC to JPEG in current note",
+      callback: () => this.convertHeicToJpegInCurrentNote(),
+    });
   }
 
   async loadSettings() {
@@ -36,10 +43,63 @@ export default class LonghandPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
+  private async convertHeicToJpegInCurrentNote() {
+    const progress = new ProgressService(this.app, this, {
+      statusBar: this.settings.showStatusBarProgress,
+      startFinishNotices: this.settings.showStartFinishNotices,
+      floatingToast: this.settings.showFloatingToastProgress,
+      overlayPosition: this.settings.overlayProgressPosition,
+    });
+
+    progress.start("Longhand: scanning images…");
+
+    const file = this.app.workspace.getActiveFile();
+    if (!file) return;
+
+    let images: NoteImageRef[] = [];
+    try {
+      images = await collectImagesFromNote(this.app, file, this.settings.imageLimit);
+    } catch (e: any) {
+      console.error(e);
+      progress.fail("Failed to parse images from note.");
+      return;
+    }
+
+    const replacements = new Map<string, string>();
+    for (const r of images) {
+      if (/\.hei[cf]$/i.test(r.file.name)) {
+        try {
+          const jpg = await convertHeicVaultFileToJpeg(this.app, r.file);
+          replacements.set(r.file.path, jpg.path);
+        } catch (e) {
+          console.warn(`HEIC->JPEG conversion failed for ${r.file.path}`, e);
+        }
+      }
+    }
+    if (replacements.size) {
+      try {
+        progress.set("Rewriting HEIC embeds to JPEG…");
+        await rewriteNoteLinks(this.app, file, replacements);
+        // Refresh image list to reflect new JPEG links
+        images = await collectImagesFromNote(this.app, file, this.settings.imageLimit);
+        if (images.length > this.settings.imageLimit) {
+          images = images.slice(0, this.settings.imageLimit);
+          progress.set(`Processing first ${this.settings.imageLimit} images (limit).`);
+        }
+      } catch (e) {
+        console.warn("Failed to rewrite note links for HEIC->JPEG.", e);
+      }
+    }
+
+    progress.done("Longhand: image processing complete.");
+  }
+
   private async processImagesInCurrentNote() {
     const progress = new ProgressService(this.app, this, {
       statusBar: this.settings.showStatusBarProgress,
       startFinishNotices: this.settings.showStartFinishNotices,
+      floatingToast: this.settings.showFloatingToastProgress,
+      overlayPosition: this.settings.overlayProgressPosition,
     });
 
     try {
@@ -121,7 +181,7 @@ export default class LonghandPlugin extends Plugin {
       for (let i = 0; i < images.length; i++) {
         const ref = images[i];
         try {
-          progress.set(`Preparing image ${i + 1}/${images.length}: ${ref.file.name}`);
+          progress.setProgress(i, images.length, `Preparing image ${i + 1}/${images.length}: ${ref.file.name}`);
           const prep = await prepareForProcessing(
             this.app,
             ref.file,
@@ -184,6 +244,15 @@ export default class LonghandPlugin extends Plugin {
       if (!modelOutput || modelOutput.trim().length === 0) {
         progress.fail("Model returned empty result.");
         return;
+      }
+
+      if (this.settings.autoLinkEntities) {
+        try {
+          progress.set("Auto-linking entities…");
+          modelOutput = await wikilinkEntities(this.app, file, modelOutput);
+        } catch (e) {
+          console.warn("Auto-link entities failed", e);
+        }
       }
 
       progress.set("Writing transcription to note…");

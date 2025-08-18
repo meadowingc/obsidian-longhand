@@ -11,6 +11,9 @@ export interface LonghandSettings {
   showStatusBarProgress: boolean;
   showStartFinishNotices: boolean;
   personalContext: string;
+  autoLinkEntities: boolean; // auto-wikilink entities in transcription
+  showFloatingToastProgress: boolean; // mobile-friendly transient messages
+  overlayProgressPosition: "off" | "top" | "bottom"; // fixed progress bar position
 }
 
 export const DEFAULT_SETTINGS: LonghandSettings = {
@@ -24,6 +27,9 @@ export const DEFAULT_SETTINGS: LonghandSettings = {
   showStatusBarProgress: true,
   showStartFinishNotices: true,
   personalContext: "",
+  autoLinkEntities: false,
+  showFloatingToastProgress: false,
+  overlayProgressPosition: "off",
 };
 
 export class LonghandSettingTab extends PluginSettingTab {
@@ -134,6 +140,33 @@ export class LonghandSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName("Show floating toast progress")
+      .setDesc("Show transient progress messages as floating toasts (useful on mobile).")
+      .addToggle((tg: any) =>
+        tg.setValue(this.settings.showFloatingToastProgress).onChange(async (v: boolean) => {
+          this.settings.showFloatingToastProgress = v;
+          await this.onSave(this.settings);
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Overlay progress bar position")
+      .setDesc("Show a fixed overlay progress bar (top or bottom) during processing.")
+      .addDropdown((dd: any) =>
+        dd
+          .addOption("off", "Off")
+          .addOption("top", "Top")
+          .addOption("bottom", "Bottom")
+          .setValue(this.settings.overlayProgressPosition)
+          .onChange(async (v: string) => {
+            if (v === "off" || v === "top" || v === "bottom") {
+              this.settings.overlayProgressPosition = v;
+              await this.onSave(this.settings);
+            }
+          })
+      );
+
+    new Setting(containerEl)
       .setName("Personal context for transcription")
       .setDesc("Optional names/terms (e.g., family, project jargon). Sent to the LLM to reduce mistakes (e.g., Roa vs Rod). Avoid sensitive info.")
       .addTextArea((t: any) =>
@@ -151,6 +184,16 @@ export class LonghandSettingTab extends PluginSettingTab {
             }
             await this.onSave(this.settings);
           })
+      );
+
+    new Setting(containerEl)
+      .setName("Auto-link entities in transcription")
+      .setDesc("Automatically wikilink first occurrence of existing note names (and their frontmatter aliases) in the new transcription.")
+      .addToggle((tg: any) =>
+        tg.setValue(this.settings.autoLinkEntities).onChange(async (v: boolean) => {
+          this.settings.autoLinkEntities = v;
+          await this.onSave(this.settings);
+        })
       );
 
     new Setting(containerEl)

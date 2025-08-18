@@ -48,6 +48,8 @@ Scripts:
 - Downscale images for LLM input (OCR uses original resolution)
 - Image limit per run
 - Show status bar progress
-- Show start/finish notices
+- Show start/finish notices (also final summary with duration)
+- Show floating toast progress (mobile-friendly transient messages)
+- Overlay progress bar position (Off / Top / Bottom)
+- Auto-link entities in transcription (wikilink existing note names & aliases)
 - Personal context (optional terms to reduce transcription mistakes)
-
