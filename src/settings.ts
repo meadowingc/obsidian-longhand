@@ -2,11 +2,11 @@ import { App, PluginSettingTab, Setting, Notice, Plugin } from "obsidian";
 
 export interface LonghandSettings {
   openaiApiKey: string;
-  azureEndpoint: string;
-  azureApiKey: string;
-  convertHeicToJpeg: boolean; // best-effort; will fall back if conversion not supported
+  openaiBaseUrl: string;
+  openaiModel: string;
+  convertHeicToJpeg: boolean;
   replaceHeicEmbedsInNote: boolean; // rewrite note links to JPEG after converting
-  downscaleForLLM: boolean; // OCR always uses original bytes
+  downscaleForLLM: boolean;
   imageLimit: number; // cap per run
   showStatusBarProgress: boolean;
   showStartFinishNotices: boolean;
@@ -18,8 +18,8 @@ export interface LonghandSettings {
 
 export const DEFAULT_SETTINGS: LonghandSettings = {
   openaiApiKey: "",
-  azureEndpoint: "",
-  azureApiKey: "",
+  openaiBaseUrl: "https://api.openai.com/v1",
+  openaiModel: "gpt-4o",
   convertHeicToJpeg: true,
   replaceHeicEmbedsInNote: true,
   downscaleForLLM: false,
@@ -51,47 +51,48 @@ export class LonghandSettingTab extends PluginSettingTab {
     containerEl.createEl("h2", { text: "Longhand Settings" });
 
     new Setting(containerEl)
-      .setName("OpenAI API Key")
-      .setDesc("Used for GPT-4o vision. Stored locally in your .obsidian plugins data.")
-      .addText((t: any) =>
+      .setName("Provider API key")
+      .setDesc("Use a key from the provider below. Stored locally, unencrypted, in your plugin data. OpenAI API billing is separate from ChatGPT subscriptions.")
+      .addText((t) => {
+        t.inputEl.type = "password";
         t
           .setPlaceholder("sk-...")
           .setValue(this.settings.openaiApiKey)
           .onChange(async (v: string) => {
             this.settings.openaiApiKey = v.trim();
             await this.onSave(this.settings);
-          })
-      );
+          });
+      });
 
     new Setting(containerEl)
-      .setName("Azure Computer Vision Endpoint")
-      .setDesc("Example: https://YOUR-RESOURCE-NAME.cognitiveservices.azure.com")
-      .addText((t: any) =>
+      .setName("API base URL")
+      .setDesc("OpenAI: https://api.openai.com/v1. OpenRouter: https://openrouter.ai/api/v1. Use the API base, not the full /chat/completions URL. Images and personal context are sent to this provider.")
+      .addText((t) =>
         t
-          .setPlaceholder("https://...cognitiveservices.azure.com")
-          .setValue(this.settings.azureEndpoint)
+          .setPlaceholder(DEFAULT_SETTINGS.openaiBaseUrl)
+          .setValue(this.settings.openaiBaseUrl)
           .onChange(async (v: string) => {
-            this.settings.azureEndpoint = v.trim().replace(/\/+$/, "");
+            this.settings.openaiBaseUrl = v.trim().replace(/\/+$/, "");
             await this.onSave(this.settings);
           })
       );
 
     new Setting(containerEl)
-      .setName("Azure Computer Vision Key")
-      .setDesc("Subscription key for Azure OCR 'read' feature.")
-      .addText((t: any) =>
+      .setName("Vision model")
+      .setDesc("Exact image-capable model ID from your provider. OpenRouter IDs include a prefix, for example openai/gpt-4o.")
+      .addText((t) =>
         t
-          .setPlaceholder("Azure OCR key")
-          .setValue(this.settings.azureApiKey)
+          .setPlaceholder(DEFAULT_SETTINGS.openaiModel)
+          .setValue(this.settings.openaiModel)
           .onChange(async (v: string) => {
-            this.settings.azureApiKey = v.trim();
+            this.settings.openaiModel = v.trim();
             await this.onSave(this.settings);
           })
       );
 
     new Setting(containerEl)
       .setName("Convert HEIC to JPEG")
-      .setDesc("Try to convert HEIC images before processing. If conversion fails, images will still be processed when possible.")
+      .setDesc("Convert HEIC/HEIF to JPEG for model input. Unsupported or failed conversions are reported rather than sent to the provider.")
       .addToggle((tg: any) =>
         tg.setValue(this.settings.convertHeicToJpeg).onChange(async (v: boolean) => {
           this.settings.convertHeicToJpeg = v;
@@ -111,7 +112,7 @@ export class LonghandSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Downscale images for LLM")
-      .setDesc("When enabled, only the model input is downscaled (OCR uses full resolution). Helps reduce cost while preserving readability.")
+      .setDesc("Resize model input to a maximum edge of 2048 pixels. Reduces upload size and cost, but may reduce handwriting detail.")
       .addToggle((tg: any) =>
         tg.setValue(this.settings.downscaleForLLM).onChange(async (v: boolean) => {
           this.settings.downscaleForLLM = v;
@@ -205,11 +206,11 @@ export class LonghandSettingTab extends PluginSettingTab {
           .setValue(String(this.settings.imageLimit))
           .onChange(async (v: string) => {
             const n = Number(v);
-            if (!Number.isFinite(n) || n <= 0) {
-              new Notice("Image limit must be a positive number.");
+            if (!Number.isInteger(n) || n < 1) {
+              new Notice("Image limit must be a positive integer.");
               return;
             }
-            this.settings.imageLimit = Math.floor(n);
+            this.settings.imageLimit = n;
             await this.onSave(this.settings);
           })
       );

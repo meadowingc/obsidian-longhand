@@ -1,10 +1,13 @@
 # Longhand (Obsidian plugin)
 
-Processes images in the current note: runs Azure OCR, optionally converts HEIC to JPEG and rewrites embeds, then sends images (optionally downscaled) plus OCR text to OpenAI to produce a Markdown transcription that is prepended to the note.
+Transcribes images in the current note directly with an OpenAI-compatible vision model.
+Optionally converts HEIC to JPEG and rewrites embeds, downscales model input,
+and auto-links existing note names in the Markdown transcription prepended to the note.
+Azure Computer Vision OCR is no longer required.
 
 ## Requirements
-- OpenAI API key
-- Azure Computer Vision endpoint and key
+- An API key from OpenAI or an OpenAI-compatible provider
+- An image-capable model supporting Chat Completions
 - Internet connectivity
 - Node.js 18+ (for building from source)
 
@@ -25,6 +28,8 @@ The recommended way to install this plugin is through [BRAT](https://github.com/
 Scripts:
 - `dev`: esbuild bundle with sourcemap
 - `build`: esbuild minified bundle
+- `typecheck`: TypeScript checks
+- `test`: regression tests
 - `release`: `node scripts/release.js` (optional, for packaging)
 
 ## Usage
@@ -33,19 +38,19 @@ Scripts:
 - The plugin:
   - Scans the note for images (order preserved; capped by Image limit)
   - Optionally converts HEIC/HEIF to JPEG and rewrites embeds to the JPEG
-  - Performs Azure OCR on each image
-  - Sends usable images (png/jpeg/webp/gif) plus OCR text to OpenAI (gpt-4o)
+  - Sends prepared images (png/jpeg/webp/gif) directly to the configured vision model
+  - Reports unsupported images and preparation failures rather than silently omitting them
   - Prepends a section to the note:
     - `## Longhand transcription (YYYY-MM-DD HH:MM:SS)`
     - followed by the generated Markdown
 
 ## Settings
-- OpenAI API Key
-- Azure Computer Vision Endpoint
-- Azure Computer Vision Key
-- Convert HEIC to JPEG (best-effort)
+- Provider API key (masked in settings; stored unencrypted locally)
+- API base URL (default `https://api.openai.com/v1`)
+- Vision model (default `gpt-4o`)
+- Convert HEIC to JPEG
 - Replace HEIC embeds with JPEG in note
-- Downscale images for LLM input (OCR uses original resolution)
+- Downscale images for LLM input (maximum edge of 2048 pixels)
 - Image limit per run
 - Show status bar progress
 - Show start/finish notices (also final summary with duration)
@@ -53,3 +58,24 @@ Scripts:
 - Overlay progress bar position (Off / Top / Bottom)
 - Auto-link entities in transcription (wikilink existing note names & aliases)
 - Personal context (optional terms to reduce transcription mistakes)
+
+## Custom providers and errors
+
+For OpenRouter, use `https://openrouter.ai/api/v1`, your OpenRouter API key,
+and an image-capable model ID such as `openai/gpt-4o`. Other compatible endpoints
+can be configured the same way. Enter the API base URL, not the full
+`/chat/completions` URL.
+
+Requests use Obsidian's native network API on desktop and mobile, avoiding
+browser CORS restrictions. Images and optional personal context are sent to
+your configured provider; API keys stay in the local plugin settings.
+
+Existing OpenAI keys and other settings are preserved. Obsolete Azure OCR
+credentials are removed from saved plugin settings. Insufficient credits/quota,
+authentication errors, rate limits, and endpoint/model errors produce actionable
+notices. A ChatGPT subscription does not include OpenAI API credits.
+
+Failed, empty, refused, or truncated model responses are not inserted into the note.
+Overlapping transcription commands are blocked to avoid duplicate requests.
+Local OCR is not included; vision-only transcription needs no additional OCR
+runtime on mobile.

@@ -1,15 +1,15 @@
-import { App, Notice, Plugin, TFile } from "obsidian";
+import { Notice, Plugin } from "obsidian";
 import { DEFAULT_SETTINGS, LonghandSettingTab, LonghandSettings } from "./settings";
 import { collectImagesFromNote, NoteImageRef } from "./services/noteService";
 import { prepareForProcessing } from "./services/imagePrep";
-import { azureOcr } from "./services/ocrService";
-import { openAiTranscription } from "./services/openaiService";
+import { formatModelError, LlmInputItem, openAiTranscription, validateBaseUrl } from "./services/openaiService";
 import { ProgressService } from "./services/progress";
 import { convertHeicVaultFileToJpeg, rewriteNoteLinks } from "./services/heicReplace";
 import { wikilinkEntities } from "./services/wikilinkEntities";
 
 export default class LonghandPlugin extends Plugin {
   settings: LonghandSettings = { ...DEFAULT_SETTINGS };
+  private processing = false;
 
   async onload() {
     await this.loadSettings();
@@ -36,7 +36,14 @@ export default class LonghandPlugin extends Plugin {
 
   async loadSettings() {
     const data = await this.loadData();
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+    this.settings = { ...DEFAULT_SETTINGS };
+    // Retain current settings and discard obsolete Azure OCR credentials.
+    for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof LonghandSettings)[]) {
+      if (data && typeof data[key] === typeof DEFAULT_SETTINGS[key]) {
+        Object.assign(this.settings, { [key]: data[key] });
+      }
+    }
+    await this.saveSettings();
   }
 
   async saveSettings() {
@@ -95,11 +102,25 @@ export default class LonghandPlugin extends Plugin {
   }
 
   private async processImagesInCurrentNote() {
+    if (this.processing) {
+      new Notice("Longhand is already processing images. Please wait.");
+      return;
+    }
+    this.processing = true;
+    try {
+      await this.transcribeCurrentNote();
+    } finally {
+      this.processing = false;
+    }
+  }
+
+  private async transcribeCurrentNote() {
+    const settings = { ...this.settings };
     const progress = new ProgressService(this.app, this, {
-      statusBar: this.settings.showStatusBarProgress,
-      startFinishNotices: this.settings.showStartFinishNotices,
-      floatingToast: this.settings.showFloatingToastProgress,
-      overlayPosition: this.settings.overlayProgressPosition,
+      statusBar: settings.showStatusBarProgress,
+      startFinishNotices: settings.showStartFinishNotices,
+      floatingToast: settings.showFloatingToastProgress,
+      overlayPosition: settings.overlayProgressPosition,
     });
 
     try {
@@ -111,18 +132,25 @@ export default class LonghandPlugin extends Plugin {
         return;
       }
 
-      if (!this.settings.openaiApiKey) {
-        progress.fail("OpenAI API key not set in settings.");
+      if (!settings.openaiApiKey.trim()) {
+        progress.fail("Provider API key not set in Longhand settings.");
         return;
       }
-      if (!this.settings.azureEndpoint || !this.settings.azureApiKey) {
-        progress.fail("Azure OCR endpoint/key not set in settings.");
+      try {
+        validateBaseUrl(settings.openaiBaseUrl);
+        if (!settings.openaiModel.trim()) throw new Error("Set a vision-capable model ID in Longhand settings.");
+      } catch (error) {
+        progress.fail(formatModelError(error));
+        return;
+      }
+      if (!Number.isInteger(settings.imageLimit) || settings.imageLimit < 1) {
+        progress.fail("Image limit must be a positive integer in Longhand settings.");
         return;
       }
 
       let images: NoteImageRef[] = [];
       try {
-        images = await collectImagesFromNote(this.app, file, this.settings.imageLimit);
+        images = await collectImagesFromNote(this.app, file, settings.imageLimit);
       } catch (e: any) {
         console.error(e);
         progress.fail("Failed to parse images from note.");
@@ -134,13 +162,13 @@ export default class LonghandPlugin extends Plugin {
         return;
       }
 
-      if (images.length > this.settings.imageLimit) {
-        images = images.slice(0, this.settings.imageLimit);
-        progress.set(`Processing first ${this.settings.imageLimit} images (limit).`);
+      if (images.length > settings.imageLimit) {
+        images = images.slice(0, settings.imageLimit);
+        progress.set(`Processing first ${settings.imageLimit} images (limit).`);
       }
 
       // Convert HEIC files and rewrite embeds if setting enabled
-      if (this.settings.replaceHeicEmbedsInNote) {
+      if (settings.replaceHeicEmbedsInNote) {
         const replacements = new Map<string, string>();
         for (const r of images) {
           if (/\.hei[cf]$/i.test(r.file.name)) {
@@ -149,6 +177,7 @@ export default class LonghandPlugin extends Plugin {
               replacements.set(r.file.path, jpg.path);
             } catch (e) {
               console.warn(`HEIC->JPEG conversion failed for ${r.file.path}`, e);
+              new Notice(`HEIC conversion failed for ${r.file.name}: ${formatModelError(e)}`, 10000);
             }
           }
         }
@@ -157,26 +186,21 @@ export default class LonghandPlugin extends Plugin {
             progress.set("Rewriting HEIC embeds to JPEG…");
             await rewriteNoteLinks(this.app, file, replacements);
             // Refresh image list to reflect new JPEG links
-            images = await collectImagesFromNote(this.app, file, this.settings.imageLimit);
-            if (images.length > this.settings.imageLimit) {
-              images = images.slice(0, this.settings.imageLimit);
-              progress.set(`Processing first ${this.settings.imageLimit} images (limit).`);
+            images = await collectImagesFromNote(this.app, file, settings.imageLimit);
+            if (images.length > settings.imageLimit) {
+              images = images.slice(0, settings.imageLimit);
+              progress.set(`Processing first ${settings.imageLimit} images (limit).`);
             }
           } catch (e) {
             console.warn("Failed to rewrite note links for HEIC->JPEG.", e);
+            new Notice(`Failed to replace HEIC embeds: ${formatModelError(e)}`, 10000);
           }
         }
       }
 
       progress.set(`Preparing ${images.length} image(s)…`);
 
-      // Pre-process + OCR
-      const perImageResults: {
-        ref: NoteImageRef;
-        fileName: string;
-        llmDataUrl?: string; // downscaled (optional)
-        ocrText: string;
-      }[] = [];
+      const perImageResults: LlmInputItem[] = [];
 
       for (let i = 0; i < images.length; i++) {
         const ref = images[i];
@@ -185,68 +209,44 @@ export default class LonghandPlugin extends Plugin {
           const prep = await prepareForProcessing(
             this.app,
             ref.file,
-            this.settings.convertHeicToJpeg,
-            this.settings.downscaleForLLM
+            settings.convertHeicToJpeg,
+            settings.downscaleForLLM
           );
 
-          let ocrText = "";
-          try {
-            ocrText = await azureOcr(prep.ocrBytes, this.settings.azureEndpoint, this.settings.azureApiKey);
-            progress.set(`OCR ${i + 1}/${images.length} complete`);
-          } catch (ocrErr) {
-            console.warn(`Azure OCR failed for ${ref.file.name}:`, ocrErr);
-            ocrText = "";
-            progress.set(`OCR ${i + 1}/${images.length} failed; continuing`);
-          }
-
           perImageResults.push({
-            ref,
             fileName: ref.file.name,
-            llmDataUrl: prep.llmDataUrl,
-            ocrText,
+            alt: ref.alt || "",
+            dataUrl: prep.llmDataUrl,
           });
         } catch (e: any) {
           console.error(`Failed to prepare image ${ref.file.name}`, e);
+          new Notice(`Skipped ${ref.file.name}: ${formatModelError(e)}`, 10000);
         }
       }
 
-      // Ensure we have at least one image prepared for LLM
-      const anyLlmImages = perImageResults.some((r) => !!r.llmDataUrl);
-      if (!anyLlmImages) {
+      if (perImageResults.length === 0) {
         progress.fail("Failed to prepare images for model input.");
         return;
       }
 
-      const usableCount = perImageResults.filter((r) => !!r.llmDataUrl).length;
-      progress.set(`Calling OpenAI with ${usableCount} image(s)…`);
+      progress.set(`Calling ${settings.openaiModel} with ${perImageResults.length} image(s)…`);
 
-      // Single OpenAI call with all images + OCR bundle
       let modelOutput = "";
       try {
         modelOutput = await openAiTranscription(
-          this.settings.openaiApiKey,
-          perImageResults.map((r) => ({
-            fileName: r.fileName,
-            alt: r.ref.alt || "",
-            ocrText: r.ocrText,
-            dataUrl: r.llmDataUrl, // can be undefined for some; service will filter
-          })),
-          this.settings.personalContext
+          settings,
+          perImageResults,
+          settings.personalContext
         );
       } catch (e: any) {
         console.error(e);
-        progress.fail("OpenAI request failed.");
+        progress.fail(formatModelError(e));
         return;
       }
 
-      progress.set("OpenAI response received.");
+      progress.set("Model response received.");
 
-      if (!modelOutput || modelOutput.trim().length === 0) {
-        progress.fail("Model returned empty result.");
-        return;
-      }
-
-      if (this.settings.autoLinkEntities) {
+      if (settings.autoLinkEntities) {
         try {
           progress.set("Auto-linking entities…");
           modelOutput = await wikilinkEntities(this.app, file, modelOutput);
@@ -259,11 +259,9 @@ export default class LonghandPlugin extends Plugin {
 
       // Prepend to note with heading + timestamp
       try {
-        const original = await this.app.vault.read(file);
         const timestamp = new Date().toISOString().replace("T", " ").substring(0, 19);
         const heading = `## Longhand transcription (${timestamp})`;
-        const newContent = `${heading}\n\n${modelOutput.trim()}\n\n---\n\n${original}`;
-        await this.app.vault.modify(file, newContent);
+        await this.app.vault.process(file, (original) => `${heading}\n\n${modelOutput.trim()}\n\n---\n\n${original}`);
         progress.done(`Longhand: inserted transcription for ${perImageResults.length} image(s).`);
       } catch (e: any) {
         console.error(e);

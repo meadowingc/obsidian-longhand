@@ -3,7 +3,7 @@
   "name": "Longhand",
   "version": "1.1.0",
   "minAppVersion": "1.5.12",
-  "description": "Process all images in the current note: Azure OCR + OpenAI vision, prepend the transcribed text to the note.",
+  "description": "Transcribe images in the current note with an OpenAI-compatible vision model and prepend the text.",
   "author": "Meadow",
   "authorUrl": "https://codeberg.org/meadowingc/obsidian-longhand",
   "isDesktopOnly": false

@@ -1,16 +1,12 @@
 import { App, TFile } from "obsidian";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore - runtime-only lib with no types by default
-import heic2any from "heic2any";
+import { convertHeicBytesToJpeg } from "./heicReplace";
 
 export interface PreparedImage {
-  ocrBytes: ArrayBuffer;
-  llmDataUrl?: string; // data URL for model input (optionally downscaled/converted)
+  llmDataUrl: string;
 }
 
 /**
- * Reads image bytes from the vault, optionally converts HEIC->JPEG, and optionally
- * downsamples ONLY the LLM input while keeping OCR at highest available resolution.
+ * Reads image bytes, converts unsupported formats, and optionally downsamples.
  */
 export async function prepareForProcessing(
   app: App,
@@ -22,59 +18,26 @@ export async function prepareForProcessing(
   const isHeic =
     /\.hei[cf]$/i.test(file.name) || looksHeicByHeader(originalBytes);
 
-  let ocrBlob: Blob | null = null;
-  let llmBlob: Blob | null = null;
-
-  // Prefer converting HEIC so Azure OCR and LLM both receive broadly supported JPEG
-  if (isHeic && convertHeicToJpeg) {
-    try {
-      const heicBlob = new Blob([originalBytes]);
-      const jpegBlob = (await (heic2any as any)({
-        blob: heicBlob,
-        toType: "image/jpeg",
-        quality: 0.92,
-      })) as Blob;
-
-      ocrBlob = jpegBlob;
-      llmBlob = jpegBlob;
-    } catch (e) {
-      console.warn("HEIC conversion failed; falling back to original bytes.", e);
+  let llmBlob: Blob;
+  if (isHeic) {
+    if (!convertHeicToJpeg) {
+      throw new Error("HEIC images require conversion. Enable Convert HEIC to JPEG or export the image as JPEG/PNG.");
     }
-  }
-
-  if (!ocrBlob) {
-    ocrBlob = new Blob([originalBytes]);
-  }
-  if (!llmBlob) {
-    // Ensure the LLM blob has a valid image MIME type for data URLs
+    llmBlob = await convertHeicBytesToJpeg(originalBytes);
+  } else {
     const mime = guessImageMime(file.name, originalBytes);
-    if (mime) {
-      llmBlob = new Blob([originalBytes], { type: mime });
-    } else {
-      // Fallback: create without explicit type (may still work), later downscale step converts to JPEG
-      llmBlob = new Blob([originalBytes]);
+    if (!mime) throw new Error("Unsupported image format. Export the image as JPEG or PNG.");
+    llmBlob = new Blob([originalBytes], { type: mime });
+    if (!["image/png", "image/jpeg", "image/webp", "image/gif"].includes(mime)) {
+      llmBlob = await downscaleBlob(llmBlob, Infinity, "image/jpeg", 0.92, true);
     }
   }
 
-  // Downscale only the model input (to reduce cost); OCR remains high-res
   if (downscaleForLLM) {
-    try {
-      llmBlob = await downscaleBlob(llmBlob, 2048, "image/jpeg", 0.9);
-    } catch (e) {
-      console.warn("Downscale failed; using original for LLM input.", e);
-    }
+    llmBlob = await downscaleBlob(llmBlob, 2048, "image/jpeg", 0.9);
   }
 
-  let llmDataUrl: string | undefined = undefined;
-  try {
-    llmDataUrl = await blobToDataUrl(llmBlob);
-  } catch (e) {
-    console.warn("Failed to build data URL for LLM input.", e);
-  }
-
-  const ocrBytes = await ocrBlob.arrayBuffer();
-
-  return { ocrBytes, llmDataUrl };
+  return { llmDataUrl: await blobToDataUrl(llmBlob) };
 }
 
 function looksHeicByHeader(bytes: ArrayBuffer): boolean {
@@ -89,7 +52,13 @@ function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const fr = new FileReader();
     fr.onerror = () => reject(new Error("Failed to read blob as data URL"));
-    fr.onload = () => resolve(String(fr.result));
+    fr.onload = () => {
+      if (typeof fr.result !== "string") {
+        reject(new Error("Failed to read image as a data URL."));
+        return;
+      }
+      resolve(fr.result);
+    };
     fr.readAsDataURL(blob);
   });
 }
@@ -98,36 +67,38 @@ async function downscaleBlob(
   blob: Blob,
   maxEdge: number,
   mime: string,
-  quality: number
+  quality: number,
+  forceConversion = false
 ): Promise<Blob> {
   const img = await loadImageFromBlob(blob);
-  const width = (img as any).naturalWidth || img.width;
-  const height = (img as any).naturalHeight || img.height;
+  const width = img.naturalWidth || img.width;
+  const height = img.naturalHeight || img.height;
   const maxDim = Math.max(width, height);
 
-  if (!maxDim || maxDim <= maxEdge) {
-    // No need to downscale
-    return blob;
-  }
+  if (!maxDim) throw new Error("Image has no readable dimensions. Export it as JPEG or PNG.");
+  if (maxDim <= maxEdge && !forceConversion) return blob;
 
-  const scale = maxEdge / maxDim;
-  const w = Math.round(width * scale);
-  const h = Math.round(height * scale);
+  const scale = Math.min(1, maxEdge / maxDim);
+  const w = Math.max(1, Math.round(width * scale));
+  const h = Math.max(1, Math.round(height * scale));
 
   const canvas = document.createElement("canvas");
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext("2d", { alpha: false });
-  if (!ctx) return blob;
+  if (!ctx) throw new Error("Could not create a canvas to prepare the image.");
 
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, w, h);
   ctx.drawImage(img, 0, 0, w, h);
 
   const out = await new Promise<Blob | null>((resolve) =>
     canvas.toBlob(resolve, mime, quality)
   );
-  return out ?? blob;
+  if (!out) throw new Error("Could not convert the image to JPEG.");
+  return out;
 }
 
 function loadImageFromBlob(blob: Blob): Promise<HTMLImageElement> {
@@ -138,9 +109,9 @@ function loadImageFromBlob(blob: Blob): Promise<HTMLImageElement> {
       URL.revokeObjectURL(url);
       resolve(img);
     };
-    img.onerror = (e) => {
+    img.onerror = () => {
       URL.revokeObjectURL(url);
-      reject(e);
+      reject(new Error("Could not decode the image on this device. Export it as JPEG or PNG."));
     };
     img.src = url;
   });
@@ -163,6 +134,7 @@ function guessMimeByExt(fileName: string): string | undefined {
   if (lower.endsWith(".webp")) return "image/webp";
   if (lower.endsWith(".gif")) return "image/gif";
   if (lower.endsWith(".bmp")) return "image/bmp";
+  if (lower.endsWith(".tif") || lower.endsWith(".tiff")) return "image/tiff";
   if (lower.endsWith(".svg")) return "image/svg+xml";
   return undefined;
 }

@@ -1,7 +1,18 @@
 import { App, TFile, normalizePath } from "obsidian";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore - runtime-only lib with no types by default
-import heic2any from "heic2any";
+
+export async function convertHeicBytesToJpeg(bytes: ArrayBuffer): Promise<Blob> {
+  // Defer the browser-only converter until a HEIC image is actually encountered.
+  const { default: heic2any } = await import("heic2any");
+  const converted = await heic2any({
+    blob: new Blob([bytes], { type: "image/heic" }),
+    toType: "image/jpeg",
+    quality: 0.92,
+  });
+  if (Array.isArray(converted)) {
+    throw new Error("HEIC conversion returned multiple images. Export each page as JPEG or PNG.");
+  }
+  return converted;
+}
 
 /**
  * Convert a HEIC/HEIF vault file to a JPEG file in the same folder.
@@ -11,12 +22,7 @@ import heic2any from "heic2any";
  */
 export async function convertHeicVaultFileToJpeg(app: App, heicFile: TFile): Promise<TFile> {
   const originalBytes = await app.vault.readBinary(heicFile);
-  const heicBlob = new Blob([originalBytes]);
-  const jpegBlob = (await (heic2any as any)({
-    blob: heicBlob,
-    toType: "image/jpeg",
-    quality: 0.92,
-  })) as Blob;
+  const jpegBlob = await convertHeicBytesToJpeg(originalBytes);
 
   const jpegBytes = await jpegBlob.arrayBuffer();
 

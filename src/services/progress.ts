@@ -90,7 +90,7 @@ export class ProgressService {
   }
 
   fail(msg: string) {
-    new Notice(msg);
+    new Notice(msg, 15000);
     this.internalUpdate(msg, { kind: "error" });
     this.dispose();
   }
