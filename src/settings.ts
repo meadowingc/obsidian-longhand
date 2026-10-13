@@ -4,6 +4,9 @@ export interface LonghandSettings {
   openaiApiKey: string;
   openaiBaseUrl: string;
   openaiModel: string;
+  requestStreaming: boolean;
+  retryTransientErrors: boolean;
+  cleanInvisibleCharacters: boolean;
   convertHeicToJpeg: boolean;
   replaceHeicEmbedsInNote: boolean; // rewrite note links to JPEG after converting
   downscaleForLLM: boolean;
@@ -20,6 +23,9 @@ export const DEFAULT_SETTINGS: LonghandSettings = {
   openaiApiKey: "",
   openaiBaseUrl: "https://api.openai.com/v1",
   openaiModel: "gpt-4o",
+  requestStreaming: false,
+  retryTransientErrors: true,
+  cleanInvisibleCharacters: true,
   convertHeicToJpeg: true,
   replaceHeicEmbedsInNote: true,
   downscaleForLLM: false,
@@ -88,6 +94,36 @@ export class LonghandSettingTab extends PluginSettingTab {
             this.settings.openaiModel = v.trim();
             await this.onSave(this.settings);
           })
+      );
+
+    new Setting(containerEl)
+      .setName("Request streaming responses")
+      .setDesc("Opt in only if your endpoint and model support streaming reliably. Incremental responses can reduce proxy idle timeouts, but some endpoints stall in streaming mode. Obsidian buffers the response, so text is inserted only when complete.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.settings.requestStreaming).onChange(async (value) => {
+          this.settings.requestStreaming = value;
+          await this.onSave(this.settings);
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Automatically retry temporary failures")
+      .setDesc("Retry network failures, temporary provider errors, and recoverable vault I/O up to twice with backoff. Timed-out generations may still be billed more than once. Does not retry insufficient credits, invalid requests, or the plugin's own timeout.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.settings.retryTransientErrors).onChange(async (value) => {
+          this.settings.retryTransientErrors = value;
+          await this.onSave(this.settings);
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Clean invisible characters in transcriptions")
+      .setDesc("Remove zero-width spaces, word joiners, soft hyphens and stray BOMs from prose. Preserves code, frontmatter, links, multilingual text and emoji sequences. This is character cleanup, not statistical AI watermark removal.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.settings.cleanInvisibleCharacters).onChange(async (value) => {
+          this.settings.cleanInvisibleCharacters = value;
+          await this.onSave(this.settings);
+        })
       );
 
     new Setting(containerEl)

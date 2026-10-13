@@ -1,5 +1,6 @@
 import { App, TFile } from "obsidian";
 import { convertHeicBytesToJpeg } from "./heicReplace";
+import { type RetryOptions, withRetry } from "./retry";
 
 export interface PreparedImage {
   llmDataUrl: string;
@@ -12,9 +13,10 @@ export async function prepareForProcessing(
   app: App,
   file: TFile,
   convertHeicToJpeg: boolean,
-  downscaleForLLM: boolean
+  downscaleForLLM: boolean,
+  retry?: RetryOptions
 ): Promise<PreparedImage> {
-  const originalBytes = await app.vault.readBinary(file);
+  const originalBytes = await withRetry(() => app.vault.readBinary(file), retry);
   const isHeic =
     /\.hei[cf]$/i.test(file.name) || looksHeicByHeader(originalBytes);
 

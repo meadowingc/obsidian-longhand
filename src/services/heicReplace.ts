@@ -1,4 +1,5 @@
 import { App, TFile, normalizePath } from "obsidian";
+import { type RetryOptions, withRetry } from "./retry";
 
 export async function convertHeicBytesToJpeg(bytes: ArrayBuffer): Promise<Blob> {
   // Defer the browser-only converter until a HEIC image is actually encountered.
@@ -20,8 +21,8 @@ export async function convertHeicBytesToJpeg(bytes: ArrayBuffer): Promise<Blob> 
  * - Avoids name collisions by appending " (n)".
  * - Returns the created JPEG TFile.
  */
-export async function convertHeicVaultFileToJpeg(app: App, heicFile: TFile): Promise<TFile> {
-  const originalBytes = await app.vault.readBinary(heicFile);
+export async function convertHeicVaultFileToJpeg(app: App, heicFile: TFile, retry?: RetryOptions): Promise<TFile> {
+  const originalBytes = await withRetry(() => app.vault.readBinary(heicFile), retry);
   const jpegBlob = await convertHeicBytesToJpeg(originalBytes);
 
   const jpegBytes = await jpegBlob.arrayBuffer();
@@ -35,14 +36,23 @@ export async function convertHeicVaultFileToJpeg(app: App, heicFile: TFile): Pro
   // Avoid collisions
   let counter = 1;
   // adapter.exists returns boolean
-  while (await app.vault.adapter.exists(outPath)) {
+  while (await withRetry(() => app.vault.adapter.exists(outPath), retry)) {
     fileName = `${base} (${counter}).jpg`;
     outPath = folder ? normalizePath(`${folder}/${fileName}`) : normalizePath(fileName);
     counter++;
   }
 
-  const created = await app.vault.createBinary(outPath, jpegBytes);
-  return created;
+  return withRetry(async () => {
+    // Keep the same path on retry and recognize a write that succeeded before throwing.
+    const existing = app.vault.getAbstractFileByPath(outPath);
+    if (existing instanceof TFile) {
+      const stored = new Uint8Array(await app.vault.readBinary(existing));
+      const expected = new Uint8Array(jpegBytes);
+      if (stored.length === expected.length && stored.every((byte, index) => byte === expected[index])) return existing;
+      throw new Error(`Cannot save JPEG: ${outPath} already contains different data.`);
+    }
+    return app.vault.createBinary(outPath, jpegBytes);
+  }, retry);
 }
 
 /**
@@ -53,13 +63,13 @@ export async function convertHeicVaultFileToJpeg(app: App, heicFile: TFile): Pro
  *
  * replacements: Map of old absolute vault path -> new absolute vault path
  */
-export async function rewriteNoteLinks(app: App, note: TFile, replacements: Map<string, string>): Promise<void> {
+export async function rewriteNoteLinks(app: App, note: TFile, replacements: Map<string, string>, retry?: RetryOptions): Promise<void> {
   if (!replacements.size) return;
 
+  const original = await withRetry(() => app.vault.read(note), retry);
   const cache = app.metadataCache.getFileCache(note);
   if (!cache) return;
 
-  const original = await app.vault.read(note);
   const ops: { start: number; end: number; newText: string }[] = [];
 
   // Helper to build new linktext relative to the note for a given absolute path
@@ -152,6 +162,12 @@ export async function rewriteNoteLinks(app: App, note: TFile, replacements: Map<
   }
 
   if (updated !== original) {
-    await app.vault.modify(note, updated);
+    await withRetry(() => app.vault.process(note, (current) => {
+      if (current === updated) return current;
+      if (current !== original) {
+        throw new Error("The note changed while replacing HEIC embeds. Run the command again to preserve your edits.");
+      }
+      return updated;
+    }), retry);
   }
 }

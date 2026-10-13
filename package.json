@@ -17,6 +17,7 @@
     "typescript": "^5.4.5"
   },
   "dependencies": {
+    "@lezer/markdown": "^1.8.0",
     "openai": "^4.56.0",
     "heic2any": "^0.0.3"
   }
