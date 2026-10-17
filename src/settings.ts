@@ -108,7 +108,7 @@ export class LonghandSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Automatically retry temporary failures")
-      .setDesc("Retry network failures, temporary provider errors, and recoverable vault I/O up to twice with backoff. Timed-out generations may still be billed more than once. Does not retry insufficient credits, invalid requests, or the plugin's own timeout.")
+      .setDesc("Retry temporary network/provider failures and recoverable vault I/O up to twice with backoff. Failed generations may still be billed more than once. Does not retry insufficient credits, invalid requests, certificate/hostname/blocked-HTTP/runtime errors, or device-side request timeouts.")
       .addToggle((toggle) =>
         toggle.setValue(this.settings.retryTransientErrors).onChange(async (value) => {
           this.settings.retryTransientErrors = value;

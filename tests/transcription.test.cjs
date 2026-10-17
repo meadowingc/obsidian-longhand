@@ -256,6 +256,254 @@ test("connection errors have network guidance and stalled requests honor SDK tim
   assert.match(formatModelError(new OpenAI.APIConnectionError({})), /network connection/);
 });
 
+test("native Android failures retain actionable categories without exposing raw exception details", async () => {
+  const privateDetails = "https://private.example/v1?token=secret-key Private note text";
+  for (const [nativeError, expected] of [
+    [new Error(`javax.net.ssl.SSLHandshakeException: Trust anchor for certification path not found ${privateDetails}`), /HTTPS certificate.*Android/],
+    [Object.assign(new Error(privateDetails), { code: "ERR_CERT_COMMON_NAME_INVALID" }), /HTTPS certificate/],
+    [new Error(`Cleartext HTTP traffic not permitted ${privateDetails}`), /blocked an unencrypted HTTP connection/],
+    [new Error(`java.net.UnknownHostException: Unable to resolve host ${privateDetails}`), /could not resolve.*DNS/],
+    [Object.assign(new Error(privateDetails), { code: "ECONNREFUSED" }), /could not reach.*localhost/],
+    [new Error(`java.net.SocketTimeoutException ${privateDetails}`), /native network request timed out.*not automatically retried/],
+    [new ReferenceError(`Request is not defined ${privateDetails}`), /web runtime.*Android System WebView/],
+    [`ERR_CLEARTEXT_NOT_PERMITTED ${privateDetails}`, /blocked an unencrypted HTTP connection/],
+    [new Error(privateDetails), /native network connection.*No model HTTP response could be read/],
+  ]) {
+    let requests = 0;
+    const { openAiTranscription, formatModelError } = loadSource("src/services/openaiService.ts", {
+      requestUrl: async () => { requests++; throw nativeError; },
+    });
+    await assert.rejects(openAiTranscription({ ...settings, requestStreaming: false }, [image]), (error) => {
+      const message = formatModelError(error);
+      assert.match(message, expected);
+      assert.doesNotMatch(message, /private\.example|secret-key|Private note text/);
+      return true;
+    });
+    assert.equal(requests, 1);
+  }
+});
+
+test("deterministic native failures and ambiguous device timeouts never trigger extra model requests", async () => {
+  for (const message of [
+    "javax.net.ssl.SSLHandshakeException",
+    "ERR_CLEARTEXT_NOT_PERMITTED",
+    "Response is not a constructor",
+    "java.net.SocketTimeoutException",
+  ]) {
+    let requests = 0;
+    const delays = [];
+    const fixture = pluginFixture(async () => {
+      requests++;
+      throw new Error(message);
+    }, undefined, retryTimers(delays));
+    fixture.plugin.settings.retryTransientErrors = true;
+    const before = fixture.getNote();
+    await fixture.plugin.processImagesInCurrentNote();
+    assert.equal(requests, 1);
+    assert.deepEqual(delays, []);
+    assert.equal(fixture.getNote(), before);
+    assert.match(fixture.notices.at(-1), /certificate|unencrypted|web runtime|native network request timed out/);
+  }
+});
+
+test("native DNS failures remain retryable and nested causes are bounded", async () => {
+  let requests = 0;
+  const delays = [];
+  const { openAiTranscription, formatModelError } = loadSource("src/services/openaiService.ts", {
+    requestUrl: async () => {
+      requests++;
+      if (requests === 1) throw Object.assign(new Error("Native request failed"), {
+        cause: Object.assign(new Error("DNS lookup failed"), { code: "EAI_AGAIN" }),
+      });
+      return jsonCompletion("Recovered DNS");
+    },
+  }, retryTimers(delays));
+  assert.equal(await openAiTranscription(
+    { ...settings, requestStreaming: false, retryTransientErrors: true }, [image]
+  ), "Recovered DNS");
+  assert.equal(requests, 2);
+  assert.deepEqual(delays, [2000]);
+  const cyclic = new Error("Unknown native failure");
+  cyclic.cause = cyclic;
+  assert.match(formatModelError(new OpenAI.APIConnectionError({ cause: cyclic })), /native network connection/);
+  const nested = new OpenAI.APIConnectionError({
+    cause: Object.assign(new Error("Bridge failed"), {
+      cause: new Error("javax.net.ssl.SSLPeerUnverifiedException"),
+    }),
+  });
+  assert.match(formatModelError(nested), /HTTPS certificate/);
+});
+
+test("Android falls back to WebView networking only for the native pre-send hostname rejection", async () => {
+  for (const streaming of [false, true]) {
+    const nativeRequests = [];
+    const browserRequests = [];
+    const { openAiTranscription } = loadSource("src/services/openaiService.ts", {
+      Platform: { isAndroidApp: true },
+      requestUrl: async (request) => {
+        nativeRequests.push(request);
+        throw new Error("Request Failed. IllegalArgumentException Invalid input to toASCII: synthetic_host.example");
+      },
+    }, {
+      fetch: async (url, options) => {
+        assert.equal(Object.keys(options.headers).some((name) => /^x-stainless-|^content-length$|^user-agent$/i.test(name)), false);
+        browserRequests.push({ url, ...options });
+        const result = streaming ? completion("TEST 123") : jsonCompletion("TEST 123");
+        return new Response(result.text, { status: result.status, headers: result.headers });
+      },
+    });
+    assert.equal(await openAiTranscription(
+      { ...settings, openaiBaseUrl: "https://synthetic_host.example/v1", requestStreaming: streaming },
+      [image]
+    ), "TEST 123");
+    assert.equal(nativeRequests.length, 1);
+    assert.equal(browserRequests.length, 1);
+    const browser = browserRequests[0];
+    assert.equal(browser.url, nativeRequests[0].url);
+    assert.equal(browser.method, "POST");
+    assert.equal(browser.body, nativeRequests[0].body);
+    assert.equal(browser.headers.authorization, nativeRequests[0].headers.authorization);
+    assert.equal(browser.headers["content-type"], nativeRequests[0].headers["content-type"]);
+    assert.equal(browser.headers.accept, nativeRequests[0].headers.accept);
+    assert.equal(Object.keys(nativeRequests[0].headers).some((name) => /^x-stainless-/i.test(name)), true);
+    assert.equal(browser.credentials, "omit");
+    assert.equal(browser.redirect, "error");
+    assert.equal(browser.signal.aborted, false);
+  }
+});
+
+test("native certificate, timeout and ordinary connection errors never trigger browser fallback", async () => {
+  for (const message of [
+    "javax.net.ssl.SSLHandshakeException",
+    "java.net.SocketTimeoutException",
+    "java.net.UnknownHostException",
+    "Connection reset by peer",
+  ]) {
+    let nativeRequests = 0;
+    const { openAiTranscription } = loadSource("src/services/openaiService.ts", {
+      Platform: { isAndroidApp: true },
+      requestUrl: async () => { nativeRequests++; throw new Error(message); },
+    }, { fetch: async () => assert.fail("Must not fall back for ambiguous failures or bypass native TLS errors") });
+    await assert.rejects(openAiTranscription({ ...settings, requestStreaming: false }, [image]));
+    assert.equal(nativeRequests, 1);
+  }
+  for (const platform of [{ isAndroidApp: false }, undefined]) {
+    const { openAiTranscription } = loadSource("src/services/openaiService.ts", {
+      Platform: platform,
+      requestUrl: async () => { throw new Error("IllegalArgumentException Invalid input to toASCII"); },
+    }, { fetch: async () => assert.fail("Fallback is Android-only") });
+    await assert.rejects(openAiTranscription(settings, [image]));
+  }
+});
+
+test("a failed Android browser fallback surfaces safe CORS guidance without repeating possible model work", async () => {
+  let nativeRequests = 0;
+  let browserRequests = 0;
+  const delays = [];
+  const { openAiTranscription, formatModelError } = loadSource("src/services/openaiService.ts", {
+    Platform: { isAndroidApp: true },
+    requestUrl: async () => {
+      nativeRequests++;
+      throw new Error("IllegalArgumentException Invalid input to toASCII: private_host.example");
+    },
+  }, {
+    ...retryTimers(delays),
+    fetch: async () => { browserRequests++; throw new TypeError("Failed to fetch private_host.example secret-key"); },
+  });
+  await assert.rejects(openAiTranscription({ ...settings, retryTransientErrors: true }, [image]), (error) => {
+    const message = formatModelError(error);
+    assert.match(message, /hostname.*CORS.*HTTPS certificate validation.*not automatically retried.*may have reached/);
+    assert.doesNotMatch(message, /private_host|secret-key/);
+    return true;
+  });
+  assert.equal(nativeRequests, 1);
+  assert.equal(browserRequests, 1);
+  assert.deepEqual(delays, []);
+});
+
+test("SDK cancellation also aborts the Android browser fallback without retrying", async (t) => {
+  const originalSetTimeout = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", (callback, delay, ...args) =>
+    originalSetTimeout(callback, delay === 600000 ? 1 : delay, ...args)
+  );
+  let nativeRequests = 0;
+  let browserRequests = 0;
+  let browserAborted = false;
+  const { openAiTranscription, formatModelError } = loadSource("src/services/openaiService.ts", {
+    Platform: { isAndroidApp: true },
+    requestUrl: async () => {
+      nativeRequests++;
+      throw new Error("Request Failed. IllegalArgumentException Invalid input to toASCII: synthetic_host.example");
+    },
+  }, {
+    fetch: async (_, { signal }) => {
+      browserRequests++;
+      return new Promise((_, reject) => {
+        signal.addEventListener("abort", () => {
+          browserAborted = true;
+          reject(new DOMException("Request aborted", "AbortError"));
+        }, { once: true });
+      });
+    },
+  });
+  await assert.rejects(openAiTranscription({
+    ...settings, requestStreaming: false, retryTransientErrors: true,
+  }, [image]), (error) => {
+    assert.match(formatModelError(error), /timed out.*not automatically retried/);
+    return true;
+  });
+  assert.equal(nativeRequests, 1);
+  assert.equal(browserRequests, 1);
+  assert.equal(browserAborted, true);
+});
+
+test("Android fallback preserves HTTP error classification and completion requirements", async () => {
+  for (const [result, expected, attempts] of [
+    [response(401, { error: { code: "invalid_api_key", message: "Invalid key" } }), /authentication failed/, 1],
+    [response(429, { error: { code: "insufficient_quota", message: "No credits" } }), /Not enough API credits/, 1],
+    [response(413, { error: { message: "Too large" } }), /HTTP 413/, 1],
+    [response(503, { error: { code: "overloaded", message: "Busy" } }), /HTTP 503/, 3],
+    [streamResponse([{ choices: [{ index: 0, delta: { content: "Partial" }, finish_reason: null }] }], false), /stream ended before completion/, 3],
+  ]) {
+    let browserRequests = 0;
+    const { openAiTranscription, formatModelError } = loadSource("src/services/openaiService.ts", {
+      Platform: { isAndroidApp: true },
+      requestUrl: async () => { throw new Error("IllegalArgumentException Invalid input to toASCII"); },
+    }, {
+      ...retryTimers(),
+      fetch: async () => {
+        browserRequests++;
+        return new Response(result.text, { status: result.status, headers: result.headers });
+      },
+    });
+    await assert.rejects(openAiTranscription({
+      ...settings, requestStreaming: result.status === 200, retryTransientErrors: true,
+    }, [image]), (error) => {
+      assert.match(formatModelError(error), expected);
+      return true;
+    });
+    assert.equal(browserRequests, attempts);
+  }
+});
+
+test("mobile upload and gateway errors are distinguished from authentication and credit failures", async () => {
+  for (const [status, expected] of [
+    [403, /gateway denied.*HTTP 403.*different network/],
+    [408, /receiving the request.*HTTP 408.*Downscale images for LLM/],
+    [413, /too large.*HTTP 413.*not automatically retried/],
+  ]) {
+    let requests = 0;
+    const { openAiTranscription, formatModelError } = loadSource("src/services/openaiService.ts", {
+      requestUrl: async () => { requests++; return response(status, { error: { message: "Request failed" } }); },
+    });
+    await assert.rejects(openAiTranscription({ ...settings, requestStreaming: false }, [image]), (error) => {
+      assert.match(formatModelError(error), expected);
+      return true;
+    });
+    assert.equal(requests, 1);
+  }
+});
+
 for (const status of [524, 504]) {
   test(`bodyless HTTP ${status} reports a provider timeout without retrying or modifying the note`, async () => {
     let requests = 0;

@@ -70,9 +70,17 @@ and an image-capable model ID such as `openai/gpt-4o`. Other compatible endpoint
 can be configured the same way. Enter the API base URL, not the full
 `/chat/completions` URL.
 
-Requests use Obsidian's native network API on desktop and mobile, avoiding
-browser CORS restrictions. Images and optional personal context are sent to
-your configured provider; API keys stay in the local plugin settings.
+Requests normally use Obsidian's native network API on desktop and mobile, avoiding
+browser CORS restrictions. On Android only, if the native layer rejects the hostname
+before sending (`IllegalArgumentException: Invalid input to toASCII`, for example
+with an underscore in a hostname), Longhand tries WebView networking instead.
+That fallback requires the provider to allow Obsidian's origin through CORS and
+preserves normal HTTPS certificate validation. It omits SDK telemetry headers
+that compatible gateways may not include in their CORS allowlists, while retaining
+authorization and JSON content headers. It does not run for certificate
+errors, timeouts, HTTP rejections, or other ambiguous native failures. Images and
+optional personal context are sent to your configured provider; API keys stay in
+the local plugin settings.
 
 Optional streaming requests let providers send incremental data instead of keeping the
 connection idle until the entire transcription is ready. This can avoid gateway
@@ -94,7 +102,7 @@ too early. Progress displays the next attempt and delay. Disable **Automatically
 retry temporary failures** to make only one attempt.
 
 Invalid credentials, insufficient credits/quota, invalid inputs, refusals, and
-output-limit errors are not retried. The plugin's own request timeout is not
+output-limit errors are not retried. Recognized device-side request timeouts are not
 retried because Obsidian cannot reliably cancel the underlying native request.
 **A failed or timed-out generation may still run or incur charges on the provider;
 automatic retries can therefore cause multiple billable generations.** Check
@@ -112,6 +120,33 @@ Existing OpenAI keys and other settings are preserved. Obsolete Azure OCR
 credentials are removed from saved plugin settings. Insufficient credits/quota,
 authentication errors, rate limits, and endpoint/model errors produce actionable
 notices. A ChatGPT subscription does not include OpenAI API credits.
+
+### Android troubleshooting
+
+The same endpoint and API key can still behave differently on a phone: Android
+has its own certificate trust, DNS/VPN routing, and native network timeouts.
+Longhand distinguishes recognized certificate, blocked HTTP, DNS, hostname-parser,
+connection, native-timeout, and web-runtime failures from HTTP errors returned by the provider.
+These notices use fixed descriptions, not raw native exception messages, which
+can contain private URLs or other request details.
+
+For mobile-only failures, check that the phone has the current plugin version
+and the same **Vision model**, streaming setting, and downscaling setting as the
+PC. Keep Obsidian in the foreground during transcription, enable **Downscale
+images for LLM**, and try one image first. A `localhost` endpoint refers to the
+phone, not the desktop. For private endpoints, the phone must have the required
+network/VPN access and trust the server's HTTPS certificate; do not disable TLS
+verification.
+
+HTTP 403 indicates a provider/gateway access denial, 408 an upload timeout, and
+413 an oversized request. A native connection failure without an HTTP response
+is not proof that the model rejected the request. Recognized certificate,
+blocked-HTTP, unsupported-runtime, native-timeout, and failed hostname-fallback
+requests are not retried; an ambiguous timeout or failed browser fallback may
+still have triggered provider work. For native hostname-parser errors, a hostname
+without underscores is the most portable server-side fix.
+If the problem persists, retain the exact Longhand notice and plugin/Obsidian
+versions for diagnosis; do not share API keys, personal context, or image data.
 
 Failed, empty, refused, or truncated model responses are not inserted into the note.
 Overlapping transcription commands are blocked to avoid duplicate requests.
